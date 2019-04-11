@@ -81,6 +81,9 @@ def ortho_init(scale=1.0):
             flat_shape = shape
         elif len(shape) == 4:  # assumes NHWC
             flat_shape = (np.prod(shape[:-1]), shape[-1])
+        # Added by Ronja
+        elif len(shape) == 3:  # assumes NWC
+            flat_shape = (np.prod(shape[:-1]), shape[-1])
         else:
             raise NotImplementedError
         gaussian_noise = np.random.normal(0.0, 1.0, flat_shape)
@@ -128,6 +131,41 @@ def conv(input_tensor, scope, *, n_filters, filter_size, stride,
             bias = tf.reshape(bias, bshape)
         return bias + tf.nn.conv2d(input_tensor, weight, strides=strides, padding=pad, data_format=data_format)
 
+# Added by Ronja Gueldenring
+def conv1d(input_tensor, scope, *, n_filters, filter_size, stride,
+         pad='VALID', init_scale=1.0, data_format='NWC', one_dim_bias=False):
+    """
+    Creates a 1d convolutional layer for TensorFlow
+
+    :param input_tensor: (TensorFlow Tensor) The input tensor for the convolution
+    :param scope: (str) The TensorFlow variable scope
+    :param n_filters: (int) The number of filters
+    :param filter_size: (int) The filter size
+    :param stride: (int) The stride of the convolution
+    :param pad: (str) The padding type ('VALID' or 'SAME')
+    :param init_scale: (int) The initialization scale
+    :param data_format: (str) The data format for the convolution weights
+    :param one_dim_bias: (bool) If the bias should be one dimentional or not
+    :return: (TensorFlow Tensor) 2d convolutional layer
+    """
+    if data_format == 'NWC':
+        channel_ax = 2
+        bshape = [1, 1, n_filters]
+    elif data_format == 'NCW':
+        channel_ax = 0
+        bshape = [1, n_filters, 1]
+    else:
+        raise NotImplementedError
+
+    bias_var_shape = [n_filters] if one_dim_bias else [1, n_filters, 1]
+    n_input = input_tensor.get_shape()[channel_ax].value
+    wshape = [filter_size, n_input, n_filters]
+    with tf.variable_scope(scope):
+        weight = tf.get_variable("w", wshape, initializer=ortho_init(init_scale))
+        bias = tf.get_variable("b", bias_var_shape, initializer=tf.constant_initializer(0.0))
+        if not one_dim_bias and data_format == 'NWC':
+            bias = tf.reshape(bias, bshape)
+        return bias + tf.nn.conv1d(input_tensor, weight, stride=stride, padding=pad, data_format=data_format)
 
 def linear(input_tensor, scope, n_hidden, *, init_scale=1.0, init_bias=0.0):
     """

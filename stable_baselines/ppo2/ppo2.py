@@ -255,7 +255,7 @@ class PPO2(ActorCriticRLModel):
 
         return policy_loss, value_loss, policy_entropy, approxkl, clipfrac
 
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=1, tb_log_name="PPO2",
+    def learn(self, total_timesteps, callback=None, seed=None, log_interval=1, tb_log_name="PPO2", save_path="",
               reset_num_timesteps=True):
         # Transform to callable if needed
         self.learning_rate = get_schedule_fn(self.learning_rate)
@@ -272,6 +272,9 @@ class PPO2(ActorCriticRLModel):
 
             ep_info_buf = deque(maxlen=100)
             t_first_start = time.time()
+
+            checkpoint_interval = 500 #000
+
 
             nupdates = total_timesteps // self.n_batch
             for update in range(1, nupdates + 1):
@@ -349,6 +352,11 @@ class PPO2(ActorCriticRLModel):
                     if callback(locals(), globals()) is False:
                         break
 
+                # Added by Ronja Gueldenring to save agents inbetween training.
+                if ((update + 1) * self.n_batch > checkpoint_interval and save_path != ""):
+                    self.save("%s_%d" % (save_path, ((update+1)*self.n_batch)))
+                    checkpoint_interval += 500000
+
             return self
 
     def save(self, save_path):
@@ -422,10 +430,10 @@ class Runner(AbstractEnvRunner):
             if isinstance(self.env.action_space, gym.spaces.Box):
                 clipped_actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
             self.obs[:], rewards, self.dones, infos = self.env.step(clipped_actions)
-            for info in infos:
-                maybe_ep_info = info.get('episode')
-                if maybe_ep_info is not None:
-                    ep_infos.append(maybe_ep_info)
+            # for info in infos:
+                # maybe_ep_info = info.get('episode')
+                # if maybe_ep_info is not None:
+                #    ep_infos.append(maybe_ep_info)
             mb_rewards.append(rewards)
         # batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)

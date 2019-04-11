@@ -179,7 +179,7 @@ class PPO1(ActorCriticRLModel):
                 self.compute_losses = tf_util.function([obs_ph, old_pi.obs_ph, action_ph, atarg, ret, lrmult],
                                                        losses)
 
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="PPO1",
+    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="PPO1", save_path="",
               reset_num_timesteps=True):
 
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
@@ -208,6 +208,9 @@ class PPO1(ActorCriticRLModel):
                 rewbuffer = deque(maxlen=100)
 
                 self.episode_reward = np.zeros((self.n_envs,))
+
+                checkpoint_interval = 500 #000
+
 
                 while True:
                     if callback is not None:
@@ -322,6 +325,11 @@ class PPO1(ActorCriticRLModel):
                     logger.record_tabular("TimeElapsed", time.time() - t_start)
                     if self.verbose >= 1 and MPI.COMM_WORLD.Get_rank() == 0:
                         logger.dump_tabular()
+
+                    # Added by Ronja Gueldenring to save agents inbetween training.
+                    if (timesteps_so_far > checkpoint_interval and save_path != ""):
+                        self.save("%s_%d" % (save_path, (timesteps_so_far)))
+                        checkpoint_interval += 50000
 
         return self
 
