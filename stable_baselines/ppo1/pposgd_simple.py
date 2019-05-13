@@ -209,7 +209,7 @@ class PPO1(ActorCriticRLModel):
 
                 self.episode_reward = np.zeros((self.n_envs,))
 
-                checkpoint_interval = 500 #000
+                checkpoint_interval = 500000
 
 
                 while True:
