@@ -90,3 +90,13 @@ Project around Roboy, a tendon-driven robot, that enabled it to move its shoulde
 | Video: https://tinyurl.com/DeepRoboyControlVideo
 | Blog post: https://tinyurl.com/mediumDRC
 | Website: https://roboy.org/
+
+Train a ROS-integrated mobile robot (differential drive) to avoid dynamic objects
+---------------------------------------------------------------------------------
+
+The RL-agent serves as local planner and is trained in a simulator fusion of [Flatland](https://github.com/avidbots/flatland) and the crowd simulator [pedsim_ros](https://github.com/srl-freiburg/pedsim_ros).
+
+Author: Ronja Güldenring
+Email: 6guelden@informatik.uni-hamburg.de
+Video: https://www.youtube.com/watch?v=laGrLaMaeT4
+GitHub: https://github.com/RGring/drl_local_planner_ros_stable_baselines
