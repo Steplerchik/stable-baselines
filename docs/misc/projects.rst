@@ -94,7 +94,8 @@ Project around Roboy, a tendon-driven robot, that enabled it to move its shoulde
 Train a ROS-integrated mobile robot (differential drive) to avoid dynamic objects
 ---------------------------------------------------------------------------------
 
-The RL-agent serves as local planner and is trained in a simulator fusion of [Flatland](https://github.com/avidbots/flatland) and the crowd simulator [pedsim_ros](https://github.com/srl-freiburg/pedsim_ros).
+The RL-agent serves as local planner and is trained in a simulator fusion of the Flatland Simulator and the crowd simulator Pedsim.
+The Proximal Policy Optimization (PPO) algorithm is applied.
 
 | Author: Ronja Güldenring
 | Email: 6guelden@informatik.uni-hamburg.de
