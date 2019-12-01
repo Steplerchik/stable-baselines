@@ -8,7 +8,7 @@ PPO2
 The `Proximal Policy Optimization <https://arxiv.org/abs/1707.06347>`_ algorithm combines ideas from A2C (having multiple workers)
 and TRPO (it uses a trust region to improve the actor).
 
-The main idea is that after an update, the new policy should be not too far form the `old` policy.
+The main idea is that after an update, the new policy should be not too far form the old policy.
 For that, ppo uses clipping to avoid too large update.
 
 .. note::
@@ -61,12 +61,11 @@ Train a PPO agent on `CartPole-v1` using 4 processes.
    import gym
 
    from stable_baselines.common.policies import MlpPolicy
-   from stable_baselines.common.vec_env import SubprocVecEnv
+   from stable_baselines.common import make_vec_env
    from stable_baselines import PPO2
 
    # multiprocess environment
-   n_cpu = 4
-   env = SubprocVecEnv([lambda: gym.make('CartPole-v1') for i in range(n_cpu)])
+   env = make_vec_env('CartPole-v1', n_envs=4)
 
    model = PPO2(MlpPolicy, env, verbose=1)
    model.learn(total_timesteps=25000)

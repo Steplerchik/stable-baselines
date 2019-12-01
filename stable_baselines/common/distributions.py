@@ -8,8 +8,10 @@ from stable_baselines.a2c.utils import linear
 
 class ProbabilityDistribution(object):
     """
-    A particular probability distribution
+    Base class for describing a probability distribution.
     """
+    def __init__(self):
+        super(ProbabilityDistribution, self).__init__()
 
     def flatparam(self):
         """
@@ -39,9 +41,9 @@ class ProbabilityDistribution(object):
 
     def kl(self, other):
         """
-        Calculates the Kullback-Leiber divergence from the given probabilty distribution
+        Calculates the Kullback-Leibler divergence from the given probabilty distribution
 
-        :param other: ([float]) the distibution to compare with
+        :param other: ([float]) the distribution to compare with
         :return: (float) the KL divergence of the two distributions
         """
         raise NotImplementedError
@@ -285,6 +287,7 @@ class CategoricalProbabilityDistribution(ProbabilityDistribution):
         :param logits: ([float]) the categorical logits input
         """
         self.logits = logits
+        super(CategoricalProbabilityDistribution, self).__init__()
 
     def flatparam(self):
         return self.logits
@@ -293,7 +296,6 @@ class CategoricalProbabilityDistribution(ProbabilityDistribution):
         return tf.argmax(self.logits, axis=-1)
 
     def neglogp(self, x):
-        # return tf.nn. (logits=self.logits, labels=x)
         # Note: we can't use sparse_softmax_cross_entropy_with_logits because
         #       the implementation does not allow second-order derivatives...
         one_hot_actions = tf.one_hot(x, self.logits.get_shape().as_list()[-1])
@@ -319,6 +321,8 @@ class CategoricalProbabilityDistribution(ProbabilityDistribution):
         return tf.reduce_sum(p_0 * (tf.log(z_0) - a_0), axis=-1)
 
     def sample(self):
+        # Gumbel-max trick to sample
+        # a categorical distribution (see http://amid.fish/humble-gumbel)
         uniform = tf.random_uniform(tf.shape(self.logits), dtype=self.logits.dtype)
         return tf.argmax(self.logits - tf.log(-tf.log(uniform)), axis=-1)
 
@@ -343,6 +347,7 @@ class MultiCategoricalProbabilityDistribution(ProbabilityDistribution):
         """
         self.flat = flat
         self.categoricals = list(map(CategoricalProbabilityDistribution, tf.split(flat, nvec, axis=-1)))
+        super(MultiCategoricalProbabilityDistribution, self).__init__()
 
     def flatparam(self):
         return self.flat
@@ -385,6 +390,7 @@ class DiagGaussianProbabilityDistribution(ProbabilityDistribution):
         self.mean = mean
         self.logstd = logstd
         self.std = tf.exp(logstd)
+        super(DiagGaussianProbabilityDistribution, self).__init__()
 
     def flatparam(self):
         return self.flat
@@ -395,7 +401,7 @@ class DiagGaussianProbabilityDistribution(ProbabilityDistribution):
 
     def neglogp(self, x):
         return 0.5 * tf.reduce_sum(tf.square((x - self.mean) / self.std), axis=-1) \
-               + 0.5 * np.log(2.0 * np.pi) * tf.to_float(tf.shape(x)[-1]) \
+               + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(x)[-1], tf.float32) \
                + tf.reduce_sum(self.logstd, axis=-1)
 
     def kl(self, other):
@@ -409,7 +415,8 @@ class DiagGaussianProbabilityDistribution(ProbabilityDistribution):
     def sample(self):
         # Bounds are taken into acount outside this class (during training only)
         # Otherwise, it changes the distribution and breaks PPO2 for instance
-        return self.mean + self.std * tf.random_normal(tf.shape(self.mean), dtype=self.mean.dtype)
+        return self.mean + self.std * tf.random_normal(tf.shape(self.mean),
+                                                       dtype=self.mean.dtype)
 
     @classmethod
     def fromflat(cls, flat):
@@ -431,6 +438,7 @@ class BernoulliProbabilityDistribution(ProbabilityDistribution):
         """
         self.logits = logits
         self.probabilities = tf.sigmoid(logits)
+        super(BernoulliProbabilityDistribution, self).__init__()
 
     def flatparam(self):
         return self.logits
@@ -439,7 +447,8 @@ class BernoulliProbabilityDistribution(ProbabilityDistribution):
         return tf.round(self.probabilities)
 
     def neglogp(self, x):
-        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=tf.to_float(x)),
+        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
+                                                                     labels=tf.cast(x, tf.float32)),
                              axis=-1)
 
     def kl(self, other):
@@ -454,7 +463,7 @@ class BernoulliProbabilityDistribution(ProbabilityDistribution):
 
     def sample(self):
         samples_from_uniform = tf.random_uniform(tf.shape(self.probabilities))
-        return tf.to_float(math_ops.less(samples_from_uniform, self.probabilities))
+        return tf.cast(math_ops.less(samples_from_uniform, self.probabilities), tf.float32)
 
     @classmethod
     def fromflat(cls, flat):

@@ -7,6 +7,10 @@ DDPG
 ====
 `Deep Deterministic Policy Gradient (DDPG) <https://arxiv.org/abs/1509.02971>`_
 
+.. note::
+
+  DDPG requires :ref:`OpenMPI <openmpi>`. If OpenMPI isn't enabled, then DDPG isn't
+  imported into the `stable_baselines` module.
 
 .. warning::
 
@@ -36,7 +40,7 @@ Can I use?
 ----------
 
 -  Recurrent policies: ❌
--  Multi processing: ❌
+-  Multi processing: ✔️ (using MPI)
 -  Gym spaces:
 
 
@@ -59,12 +63,10 @@ Example
   import numpy as np
 
   from stable_baselines.ddpg.policies import MlpPolicy
-  from stable_baselines.common.vec_env import DummyVecEnv
-  from stable_baselines.ddpg.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise, AdaptiveParamNoiseSpec
+  from stable_baselines.common.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise, AdaptiveParamNoiseSpec
   from stable_baselines import DDPG
 
   env = gym.make('MountainCarContinuous-v0')
-  env = DummyVecEnv([lambda: env])
 
   # the noise objects for DDPG
   n_actions = env.action_space.shape[-1]
@@ -144,21 +146,17 @@ You can easily define a custom architecture for the policy network:
   import gym
 
   from stable_baselines.ddpg.policies import FeedForwardPolicy
-  from stable_baselines.common.vec_env import DummyVecEnv
   from stable_baselines import DDPG
 
   # Custom MLP policy of two layers of size 16 each
-  class CustomPolicy(FeedForwardPolicy):
+  class CustomDDPGPolicy(FeedForwardPolicy):
       def __init__(self, *args, **kwargs):
-          super(CustomPolicy, self).__init__(*args, **kwargs,
+          super(CustomDDPGPolicy, self).__init__(*args, **kwargs,
                                              layers=[16, 16],
                                              layer_norm=False,
                                              feature_extraction="mlp")
 
-  # Create and wrap the environment
-  env = gym.make('Pendulum-v0')
-  env = DummyVecEnv([lambda: env])
 
-  model = DDPG(CustomPolicy, env, verbose=1)
+  model = DDPG(CustomDDPGPolicy, 'Pendulum-v0', verbose=1)
   # Train the agent
   model.learn(total_timesteps=100000)

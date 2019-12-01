@@ -7,6 +7,14 @@ import datetime
 import tempfile
 import warnings
 from collections import defaultdict
+from typing import Optional
+
+import tensorflow as tf
+from tensorflow.python import pywrap_tensorflow
+from tensorflow.core.util import event_pb2
+from tensorflow.python.util import compat
+
+from stable_baselines.common.misc_util import mpi_rank_or_zero
 
 DEBUG = 10
 INFO = 20
@@ -53,7 +61,7 @@ class HumanOutputFormat(KVWriter, SeqWriter):
             self.file = open(filename_or_file, 'wt')
             self.own_file = True
         else:
-            assert hasattr(filename_or_file, 'read'), 'expected file or str, got %s' % filename_or_file
+            assert hasattr(filename_or_file, 'write'), 'Expected file or str, got {}'.format(filename_or_file)
             self.file = filename_or_file
             self.own_file = False
 
@@ -124,8 +132,12 @@ class JSONOutputFormat(KVWriter):
     def writekvs(self, kvs):
         for key, value in sorted(kvs.items()):
             if hasattr(value, 'dtype'):
-                value = value.tolist()
-                kvs[key] = float(value)
+                if value.shape == () or len(value) == 1:
+                    # if value is a dimensionless numpy array or of length 1, serialize as a float
+                    kvs[key] = float(value)
+                else:
+                    # otherwise, a value is a numpy array, serialize as a list or nested lists
+                    kvs[key] = value.tolist()
         self.file.write(json.dumps(kvs) + '\n')
         self.file.flush()
 
@@ -180,6 +192,29 @@ class CSVOutputFormat(KVWriter):
         self.file.close()
 
 
+def summary_val(key, value):
+    """
+    :param key: (str)
+    :param value: (float)
+    """
+    kwargs = {'tag': key, 'simple_value': float(value)}
+    return tf.Summary.Value(**kwargs)
+
+
+def valid_float_value(value):
+    """
+    Returns True if the value can be successfully cast into a float
+
+    :param value: (Any) the value to check
+    :return: (bool)
+    """
+    try:
+        float(value)
+        return True
+    except TypeError:
+        return False
+
+
 class TensorBoardOutputFormat(KVWriter):
     def __init__(self, folder):
         """
@@ -192,22 +227,11 @@ class TensorBoardOutputFormat(KVWriter):
         self.step = 1
         prefix = 'events'
         path = os.path.join(os.path.abspath(folder), prefix)
-        import tensorflow as tf
-        from tensorflow.python import pywrap_tensorflow
-        from tensorflow.core.util import event_pb2
-        from tensorflow.python.util import compat
-        self._tf = tf
-        self.event_pb2 = event_pb2
-        self.pywrap_tensorflow = pywrap_tensorflow
-        self.writer = pywrap_tensorflow.EventsWriter(compat.as_bytes(path))
+        self.writer = pywrap_tensorflow.EventsWriter(compat.as_bytes(path))  # type: pywrap_tensorflow.EventsWriter
 
     def writekvs(self, kvs):
-        def summary_val(key, value):
-            kwargs = {'tag': key, 'simple_value': float(value)}
-            return self._tf.Summary.Value(**kwargs)
-
-        summary = self._tf.Summary(value=[summary_val(k, v) for k, v in kvs.items()])
-        event = self.event_pb2.Event(wall_time=time.time(), summary=summary)
+        summary = tf.Summary(value=[summary_val(k, v) for k, v in kvs.items() if valid_float_value(v)])
+        event = event_pb2.Event(wall_time=time.time(), summary=summary)
         event.step = self.step  # is there any reason why you'd want to specify the step?
         self.writer.WriteEvent(event)
         self.writer.Flush()
@@ -431,8 +455,9 @@ def profile(name):
 class Logger(object):
     # A logger with no output files. (See right below class definition)
     #  So that you can still log to the terminal without setting up any output files
-    DEFAULT = None
-    CURRENT = None  # Current logger being used by the free functions above
+    DEFAULT = None  # type: Optional["Logger"]
+    # Current logger being used by the free functions above
+    CURRENT = None  # type: Optional["Logger"]
 
     def __init__(self, folder, output_formats):
         """
@@ -556,17 +581,14 @@ def configure(folder=None, format_strs=None):
         folder = os.path.join(tempfile.gettempdir(), datetime.datetime.now().strftime("openai-%Y-%m-%d-%H-%M-%S-%f"))
     assert isinstance(folder, str)
     os.makedirs(folder, exist_ok=True)
+    rank = mpi_rank_or_zero()
 
     log_suffix = ''
-    from mpi4py import MPI
-    rank = MPI.COMM_WORLD.Get_rank()
-    if rank > 0:
-        log_suffix = "-rank%03i" % rank
-
     if format_strs is None:
         if rank == 0:
             format_strs = os.getenv('OPENAI_LOG_FORMAT', 'stdout,log,csv').split(',')
         else:
+            log_suffix = "-rank%03i" % rank
             format_strs = os.getenv('OPENAI_LOG_FORMAT_MPI', 'log').split(',')
     format_strs = filter(None, format_strs)
     output_formats = [make_output_format(f, folder, log_suffix) for f in format_strs]

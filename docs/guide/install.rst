@@ -10,6 +10,12 @@ Baselines requires python3 (>=3.5) with the development headers. You'll
 also need system packages CMake, OpenMPI and zlib. Those can be
 installed as follows
 
+.. note::
+
+	Stable-Baselines supports Tensorflow versions from 1.8.0 to 1.14.0, and does not work on
+	Tensorflow versions 2.0.0 and above. Support for Tensorflow 2 API is planned.
+
+
 Ubuntu
 ~~~~~~
 
@@ -21,7 +27,7 @@ Mac OS X
 ~~~~~~~~
 
 Installation of system packages on Mac requires `Homebrew`_. With
-Homebrew installed, run the follwing:
+Homebrew installed, run the following:
 
 .. code-block:: bash
 
@@ -33,26 +39,39 @@ Homebrew installed, run the follwing:
 Windows 10
 ~~~~~~~~~~
 
-We recommend using `Anaconda <https://conda.io/docs/user-guide/install/windows.html>`_ for windows users.
+We recommend using `Anaconda <https://conda.io/docs/user-guide/install/windows.html>`_ for Windows users for easier installation of Python packages and required libraries. You need an environment with Python version 3.5 or above.
 
-0. Create a new environment in the Anaconda Navigator (at least python 3.5) and install ``zlib`` in this environment.
+For a quick start you can move straight to installing Stable-Baselines in the next step (without MPI). This supports most but not all algorithms.
 
-1. Install `MPI for Windows <https://www.microsoft.com/en-us/download/details.aspx?id=57467>`_ (you need to download and install ``msmpisetup.exe``)
+To support all algorithms, Install `MPI for Windows <https://www.microsoft.com/en-us/download/details.aspx?id=57467>`_ (you need to download and install ``msmpisetup.exe``) and follow the instructions on how to install Stable-Baselines with MPI support in following section.
 
-2. Clone Stable-Baselines Github repo and replace this line ``gym[atari,classic_control]>=0.10.9`` by this one ``gym[classic_control]>=0.10.9``
+.. note::
 
-3. Install Stable-Baselines from source, inside the folder, run ``pip install -e .``
+	Trying to create Atari environments may result to vague errors related to missing DLL files and modules. This is an
+	issue with atari-py package. `See this discussion for more information <https://github.com/openai/atari-py/issues/65>`_.
 
-4. [Optional] If you want to use atari environments, you need to install this package: https://github.com/j8lp/atari-py
-(using again ``pip install -e .``)
 
+.. _openmpi:
 
 Stable Release
---------------
+~~~~~~~~~~~~~~
+To install with support for all algorithms, including those depending on OpenMPI, execute:
+
+.. code-block:: bash
+
+    pip install stable-baselines[mpi]
+
+GAIL, DDPG, TRPO, and PPO1 parallelize training using OpenMPI. OpenMPI has had weird
+interactions with Tensorflow in the past (see
+`Issue #430 <https://github.com/hill-a/stable-baselines/issues/430>`_) and so if you do not
+intend to use these algorithms we recommend installing without OpenMPI. To do this, execute:
 
 .. code-block:: bash
 
     pip install stable-baselines
+
+If you have already installed with MPI support, you can disable MPI by uninstalling ``mpi4py``
+with ``pip uninstall mpi4py``.
 
 
 Bleeding-edge version
@@ -82,13 +101,13 @@ GPU image (requires `nvidia-docker`_):
 
 .. code-block:: bash
 
-   docker pull araffin/stable-baselines
+   docker pull stablebaselines/stable-baselines
 
 CPU only:
 
 .. code-block:: bash
 
-   docker pull araffin/stable-baselines-cpu
+   docker pull stablebaselines/stable-baselines-cpu
 
 Build the Docker Images
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -97,13 +116,13 @@ Build GPU image (with nvidia-docker):
 
 .. code-block:: bash
 
-   docker build . -f docker/Dockerfile.gpu -t stable-baselines
+   USE_GPU=True ./scripts/build_docker.sh
 
 Build CPU image:
 
 .. code-block:: bash
 
-   docker build . -f docker/Dockerfile.cpu -t stable-baselines-cpu
+   ./scripts/build_docker.sh
 
 Note: if you are using a proxy, you need to pass extra params during
 build and do some `tweaks`_:
@@ -119,25 +138,25 @@ Run the nvidia-docker GPU image
 
 .. code-block:: bash
 
-   docker run -it --runtime=nvidia --rm --network host --ipc=host --name test --mount src="$(pwd)",target=/root/code/stable-baselines,type=bind araffin/stable-baselines bash -c 'cd /root/code/stable-baselines/ && pytest tests/'
+   docker run -it --runtime=nvidia --rm --network host --ipc=host --name test --mount src="$(pwd)",target=/root/code/stable-baselines,type=bind stablebaselines/stable-baselines bash -c 'cd /root/code/stable-baselines/ && pytest tests/'
 
 Or, with the shell file:
 
 .. code-block:: bash
 
-   ./run_docker_gpu.sh pytest tests/
+   ./scripts/run_docker_gpu.sh pytest tests/
 
 Run the docker CPU image
 
 .. code-block:: bash
 
-   docker run -it --rm --network host --ipc=host --name test --mount src="$(pwd)",target=/root/code/stable-baselines,type=bind araffin/stable-baselines-cpu bash -c 'cd /root/code/stable-baselines/ && pytest tests/'
+   docker run -it --rm --network host --ipc=host --name test --mount src="$(pwd)",target=/root/code/stable-baselines,type=bind stablebaselines/stable-baselines-cpu bash -c 'cd /root/code/stable-baselines/ && pytest tests/'
 
 Or, with the shell file:
 
 .. code-block:: bash
 
-   ./run_docker_cpu.sh pytest tests/
+   ./scripts/run_docker_cpu.sh pytest tests/
 
 Explanation of the docker command:
 

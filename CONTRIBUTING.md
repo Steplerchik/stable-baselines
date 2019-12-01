@@ -88,10 +88,10 @@ All new features must add tests in the `tests/` folder ensuring that everything 
 We use [pytest](https://pytest.org/).
 Also, when a bug fix is proposed, tests should be added to avoid regression.
 
-To run tests:
+To run tests with `pytest` and type checking with `pytype`:
 
 ```
-./run_tests.sh
+./scripts/run_tests.sh
 ```
 
 ## Changelog and Documentation

@@ -27,7 +27,16 @@ and its extensions (Double-DQN, Dueling-DQN, Prioritized Experience Replay).
 Notes
 -----
 
-- Original paper: https://arxiv.org/abs/1312.5602
+- DQN paper: https://arxiv.org/abs/1312.5602
+- Dueling DQN: https://arxiv.org/abs/1511.06581
+- Double-Q Learning: https://arxiv.org/abs/1509.06461
+- Prioritized Experience Replay: https://arxiv.org/abs/1511.05952
+
+.. note::
+
+    By default, the DQN class has double q learning and dueling extensions enabled.
+    See `Issue #406 <https://github.com/hill-a/stable-baselines/issues/406>`_ for disabling dueling.
+    To disable double-q learning, you can change the default value in the constructor.
 
 
 Can I use?
@@ -60,7 +69,6 @@ Example
   from stable_baselines import DQN
 
   env = gym.make('CartPole-v1')
-  env = DummyVecEnv([lambda: env])
 
   model = DQN(MlpPolicy, env, verbose=1)
   model.learn(total_timesteps=25000)
@@ -93,7 +101,7 @@ With Atari:
 
   del model # remove to demonstrate saving and loading
 
-  DQN.load("deepq_breakout")
+  model = DQN.load("deepq_breakout")
 
   obs = env.reset()
   while True:
@@ -148,9 +156,9 @@ You can easily define a custom architecture for the policy network:
   from stable_baselines import DQN
 
   # Custom MLP policy of two layers of size 32 each
-  class CustomPolicy(FeedForwardPolicy):
+  class CustomDQNPolicy(FeedForwardPolicy):
       def __init__(self, *args, **kwargs):
-          super(CustomPolicy, self).__init__(*args, **kwargs,
+          super(CustomDQNPolicy, self).__init__(*args, **kwargs,
                                              layers=[32, 32],
                                              layer_norm=False,
                                              feature_extraction="mlp")
@@ -159,6 +167,6 @@ You can easily define a custom architecture for the policy network:
   env = gym.make('LunarLander-v2')
   env = DummyVecEnv([lambda: env])
 
-  model = DQN(CustomPolicy, env, verbose=1)
+  model = DQN(CustomDQNPolicy, env, verbose=1)
   # Train the agent
   model.learn(total_timesteps=100000)

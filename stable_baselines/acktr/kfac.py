@@ -22,7 +22,7 @@ class KfacOptimizer:
 
         :param learning_rate: (float) The learning rate
         :param momentum: (float) The momentum value for the TensorFlow momentum optimizer
-        :param clip_kl: (float) gradient clipping for Kullback leiber
+        :param clip_kl: (float) gradient clipping for Kullback-Leibler
         :param kfac_update: (int) update kfac after kfac_update steps
         :param stats_accum_iter: (int) how may steps to accumulate stats
         :param full_stats_init: (bool) whether or not to fully initalize stats
@@ -86,6 +86,8 @@ class KfacOptimizer:
         self.stats = {}
         self.stats_eigen = {}
 
+        self._update_stats_op = None
+
     def get_factors(self, gradients, varlist):
         """
         get factors to update
@@ -131,7 +133,9 @@ class KfacOptimizer:
                 fprop_op_name = op_names[0]
                 fprop_op = factors[0]['op']
             else:
-                fprop_op_name = re.search('gradientsSampled(_[0-9]+|)/(.+?)_grad', bprop_op_name).group(2)
+                fprop_op_match = re.search('gradientsSampled(_[0-9]+|)/(.+?)_grad', bprop_op_name)
+                assert fprop_op_match is not None
+                fprop_op_name = fprop_op_match.group(2)
                 fprop_op = graph.get_operation_by_name(fprop_op_name)
                 if fprop_op.op_def.name in KFAC_OPS:
                     # Known OPs
@@ -192,7 +196,8 @@ class KfacOptimizer:
             for i, param in enumerate(varlist):
                 if len(factor_tensors[param][key]) > 0:
                     if (key + '_concat') not in factor_tensors[param]:
-                        name_scope = factor_tensors[param][key][0].name.split(':')[
+                        tensor = factor_tensors[param][key][0]  # type: tf.Tensor
+                        name_scope = tensor.name.split(':')[
                             0]
                         with tf.name_scope(name_scope):
                             factor_tensors[param][
@@ -469,11 +474,11 @@ class KfacOptimizer:
 
                     # assume sampled loss is averaged. TODO:figure out better
                     # way to handle this
-                    bprop_factor *= tf.to_float(batch_size)
+                    bprop_factor *= tf.cast(batch_size, tf.float32)
                     ##
 
-                    cov_b = tf.matmul(
-                        bprop_factor, bprop_factor, transpose_a=True) / tf.to_float(tf.shape(bprop_factor)[0])
+                    cov_b = tf.matmul(bprop_factor, bprop_factor,
+                                      transpose_a=True) / tf.cast(tf.shape(bprop_factor)[0], tf.float32)
 
                     update_ops.append(cov_b)
                     stats_updates[stats_var] = cov_b

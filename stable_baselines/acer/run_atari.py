@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 import warnings
 
-from stable_baselines import logger
-from stable_baselines.acer import ACER
+from stable_baselines import logger, ACER
 from stable_baselines.common.policies import CnnPolicy, CnnLstmPolicy
 from stable_baselines.common.cmd_util import make_atari_env, atari_arg_parser
 from stable_baselines.common.vec_env import VecFrameStack
@@ -29,9 +28,11 @@ def train(env_id, num_timesteps, seed, policy, lr_schedule, num_cpu):
         warnings.warn("Policy {} not implemented".format(policy))
         return
 
-    model = ACER(policy_fn, env, lr_schedule=lr_schedule, buffer_size=5000)
-    model.learn(total_timesteps=int(num_timesteps * 1.1), seed=seed)
+    model = ACER(policy_fn, env, lr_schedule=lr_schedule, buffer_size=5000, seed=seed)
+    model.learn(total_timesteps=int(num_timesteps * 1.1))
     env.close()
+    # Free memory
+    del model
 
 
 def main():

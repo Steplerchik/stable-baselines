@@ -9,6 +9,11 @@ TRPO
 `Trust Region Policy Optimization (TRPO) <https://arxiv.org/abs/1502.05477>`_
 is an iterative approach for optimizing policies with guaranteed monotonic improvement.
 
+.. note::
+
+  TRPO requires :ref:`OpenMPI <openmpi>`. If OpenMPI isn't enabled, then TRPO isn't
+  imported into the `stable_baselines` module.
+
 Notes
 -----
 
@@ -21,7 +26,7 @@ Notes
 Can I use?
 ----------
 
--  Recurrent policies: ✔️
+-  Recurrent policies: ❌
 -  Multi processing: ✔️  (using MPI)
 -  Gym spaces:
 
@@ -43,12 +48,10 @@ Example
 
   import gym
 
-  from stable_baselines.common.policies import MlpPolicy, MlpLstmPolicy, MlpLnLstmPolicy
-  from stable_baselines.common.vec_env import DummyVecEnv
+  from stable_baselines.common.policies import MlpPolicy
   from stable_baselines import TRPO
 
   env = gym.make('CartPole-v1')
-  env = DummyVecEnv([lambda: env])
 
   model = TRPO(MlpPolicy, env, verbose=1)
   model.learn(total_timesteps=25000)

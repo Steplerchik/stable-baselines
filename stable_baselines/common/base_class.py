@@ -2,14 +2,18 @@ from abc import ABC, abstractmethod
 import os
 import glob
 import warnings
+from collections import OrderedDict
+import json
+import zipfile
 
 import cloudpickle
 import numpy as np
 import gym
 import tensorflow as tf
 
-from stable_baselines.common import set_global_seeds
-from stable_baselines.common.policies import LstmPolicy, get_policy_from_name, ActorCriticPolicy
+from stable_baselines.common.misc_util import set_global_seeds
+from stable_baselines.common.save_util import data_to_json, json_to_data, params_to_bytes, bytes_to_params
+from stable_baselines.common.policies import get_policy_from_name, ActorCriticPolicy
 from stable_baselines.common.vec_env import VecEnvWrapper, VecEnv, DummyVecEnv
 from stable_baselines import logger
 
@@ -24,10 +28,17 @@ class BaseRLModel(ABC):
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param requires_vec_env: (bool) Does this model require a vectorized environment
     :param policy_base: (BasePolicy) the base policy used by this method
+    :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
 
-    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base, policy_kwargs=None):
-        if isinstance(policy, str):
+    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base,
+                 policy_kwargs=None, seed=None, n_cpu_tf_sess=None):
+        if isinstance(policy, str) and policy_base is not None:
             self.policy = get_policy_from_name(policy_base, policy)
         else:
             self.policy = policy
@@ -40,6 +51,12 @@ class BaseRLModel(ABC):
         self.n_envs = None
         self._vectorize_action = False
         self.num_timesteps = 0
+        self.graph = None
+        self.sess = None
+        self.params = None
+        self.seed = seed
+        self._param_load_ops = None
+        self.n_cpu_tf_sess = n_cpu_tf_sess
 
         if env is not None:
             if isinstance(env, str):
@@ -53,7 +70,12 @@ class BaseRLModel(ABC):
                 if isinstance(env, VecEnv):
                     self.n_envs = env.num_envs
                 else:
-                    raise ValueError("Error: the model requires a vectorized environment, please use a VecEnv wrapper.")
+                    # The model requires a VecEnv
+                    # wrap it in a DummyVecEnv to avoid error
+                    self.env = DummyVecEnv([lambda: env])
+                    if self.verbose >= 1:
+                        print("Wrapping the env in a DummyVecEnv.")
+                    self.n_envs = 1
             else:
                 if isinstance(env, VecEnv):
                     if env.num_envs == 1:
@@ -95,7 +117,7 @@ class BaseRLModel(ABC):
             assert isinstance(env, VecEnv), \
                 "Error: the environment passed is not a vectorized environment, however {} requires it".format(
                     self.__class__.__name__)
-            assert not issubclass(self.policy, LstmPolicy) or self.n_envs == env.num_envs, \
+            assert not self.policy.recurrent or self.n_envs == env.num_envs, \
                 "Error: the environment passed must have the same number of environments as the model was trained on." \
                 "This is due to the Lstm policy not being capable of changing the number of environments."
             self.n_envs = env.num_envs
@@ -138,26 +160,188 @@ class BaseRLModel(ABC):
         """
         pass
 
-    def _setup_learn(self, seed):
+    def set_random_seed(self, seed):
         """
-        check the environment, set the seed, and set the logger
+        :param seed: (int) Seed for the pseudo-random generators. If None,
+            do not change the seeds.
+        """
+        # Ignore if the seed is None
+        if seed is None:
+            return
+        # Seed python, numpy and tf random generator
+        set_global_seeds(seed)
+        if self.env is not None:
+            if isinstance(self.env, VecEnv):
+                # Use a different seed for each env
+                for idx in range(self.env.num_envs):
+                    self.env.env_method("seed", seed + idx)
+            else:
+                self.env.seed(seed)
+            # Seed the action space
+            # useful when selecting random actions
+            self.env.action_space.seed(seed)
+        self.action_space.seed(seed)
 
-        :param seed: (int) the seed value
+    def _setup_learn(self):
+        """
+        Check the environment.
         """
         if self.env is None:
             raise ValueError("Error: cannot train the model without a valid environment, please set an environment with"
                              "set_env(self, env) method.")
-        if seed is not None:
-            set_global_seeds(seed)
 
     @abstractmethod
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="run",
+    def get_parameter_list(self):
+        """
+        Get tensorflow Variables of model's parameters
+
+        This includes all variables necessary for continuing training (saving / loading).
+
+        :return: (list) List of tensorflow Variables
+        """
+        pass
+
+    def get_parameters(self):
+        """
+        Get current model parameters as dictionary of variable name -> ndarray.
+
+        :return: (OrderedDict) Dictionary of variable name -> ndarray of model's parameters.
+        """
+        parameters = self.get_parameter_list()
+        parameter_values = self.sess.run(parameters)
+        return_dictionary = OrderedDict((param.name, value) for param, value in zip(parameters, parameter_values))
+        return return_dictionary
+
+    def _setup_load_operations(self):
+        """
+        Create tensorflow operations for loading model parameters
+        """
+        # Assume tensorflow graphs are static -> check
+        # that we only call this function once
+        if self._param_load_ops is not None:
+            raise RuntimeError("Parameter load operations have already been created")
+        # For each loadable parameter, create appropiate
+        # placeholder and an assign op, and store them to
+        # self.load_param_ops as dict of variable.name -> (placeholder, assign)
+        loadable_parameters = self.get_parameter_list()
+        # Use OrderedDict to store order for backwards compatibility with
+        # list-based params
+        self._param_load_ops = OrderedDict()
+        with self.graph.as_default():
+            for param in loadable_parameters:
+                placeholder = tf.placeholder(dtype=param.dtype, shape=param.shape)
+                # param.name is unique (tensorflow variables have unique names)
+                self._param_load_ops[param.name] = (placeholder, param.assign(placeholder))
+
+    @abstractmethod
+    def _get_pretrain_placeholders(self):
+        """
+        Return the placeholders needed for the pretraining:
+        - obs_ph: observation placeholder
+        - actions_ph will be population with an action from the environement
+            (from the expert dataset)
+        - deterministic_actions_ph: e.g., in the case of a gaussian policy,
+            the mean.
+
+        :return: ((tf.placeholder)) (obs_ph, actions_ph, deterministic_actions_ph)
+        """
+        pass
+
+    def pretrain(self, dataset, n_epochs=10, learning_rate=1e-4,
+                 adam_epsilon=1e-8, val_interval=None):
+        """
+        Pretrain a model using behavior cloning:
+        supervised learning given an expert dataset.
+
+        NOTE: only Box and Discrete spaces are supported for now.
+
+        :param dataset: (ExpertDataset) Dataset manager
+        :param n_epochs: (int) Number of iterations on the training set
+        :param learning_rate: (float) Learning rate
+        :param adam_epsilon: (float) the epsilon value for the adam optimizer
+        :param val_interval: (int) Report training and validation losses every n epochs.
+            By default, every 10th of the maximum number of epochs.
+        :return: (BaseRLModel) the pretrained model
+        """
+        continuous_actions = isinstance(self.action_space, gym.spaces.Box)
+        discrete_actions = isinstance(self.action_space, gym.spaces.Discrete)
+
+        assert discrete_actions or continuous_actions, 'Only Discrete and Box action spaces are supported'
+
+        # Validate the model every 10% of the total number of iteration
+        if val_interval is None:
+            # Prevent modulo by zero
+            if n_epochs < 10:
+                val_interval = 1
+            else:
+                val_interval = int(n_epochs / 10)
+
+        with self.graph.as_default():
+            with tf.variable_scope('pretrain'):
+                if continuous_actions:
+                    obs_ph, actions_ph, deterministic_actions_ph = self._get_pretrain_placeholders()
+                    loss = tf.reduce_mean(tf.square(actions_ph - deterministic_actions_ph))
+                else:
+                    obs_ph, actions_ph, actions_logits_ph = self._get_pretrain_placeholders()
+                    # actions_ph has a shape if (n_batch,), we reshape it to (n_batch, 1)
+                    # so no additional changes is needed in the dataloader
+                    actions_ph = tf.expand_dims(actions_ph, axis=1)
+                    one_hot_actions = tf.one_hot(actions_ph, self.action_space.n)
+                    loss = tf.nn.softmax_cross_entropy_with_logits_v2(
+                        logits=actions_logits_ph,
+                        labels=tf.stop_gradient(one_hot_actions)
+                    )
+                    loss = tf.reduce_mean(loss)
+                optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate, epsilon=adam_epsilon)
+                optim_op = optimizer.minimize(loss, var_list=self.params)
+
+            self.sess.run(tf.global_variables_initializer())
+
+        if self.verbose > 0:
+            print("Pretraining with Behavior Cloning...")
+
+        for epoch_idx in range(int(n_epochs)):
+            train_loss = 0.0
+            # Full pass on the training set
+            for _ in range(len(dataset.train_loader)):
+                expert_obs, expert_actions = dataset.get_next_batch('train')
+                feed_dict = {
+                    obs_ph: expert_obs,
+                    actions_ph: expert_actions,
+                }
+                train_loss_, _ = self.sess.run([loss, optim_op], feed_dict)
+                train_loss += train_loss_
+
+            train_loss /= len(dataset.train_loader)
+
+            if self.verbose > 0 and (epoch_idx + 1) % val_interval == 0:
+                val_loss = 0.0
+                # Full pass on the validation set
+                for _ in range(len(dataset.val_loader)):
+                    expert_obs, expert_actions = dataset.get_next_batch('val')
+                    val_loss_, = self.sess.run([loss], {obs_ph: expert_obs,
+                                                        actions_ph: expert_actions})
+                    val_loss += val_loss_
+
+                val_loss /= len(dataset.val_loader)
+                if self.verbose > 0:
+                    print("==== Training progress {:.2f}% ====".format(100 * (epoch_idx + 1) / n_epochs))
+                    print('Epoch {}'.format(epoch_idx + 1))
+                    print("Training loss: {:.6f}, Validation loss: {:.6f}".format(train_loss, val_loss))
+                    print()
+            # Free memory
+            del expert_obs, expert_actions
+        if self.verbose > 0:
+            print("Pretraining done.")
+        return self
+
+    @abstractmethod
+    def learn(self, total_timesteps, callback=None, log_interval=100, tb_log_name="run",
               reset_num_timesteps=True):
         """
         Return a trained model.
 
         :param total_timesteps: (int) The total number of samples to train on
-        :param seed: (int) The initial seed for training, if None: keep current seed
         :param callback: (function (dict, dict)) -> boolean function called at every steps with state of the algorithm.
             It takes the local and global variables. If it returns False, training is aborted.
         :param log_interval: (int) The number of timesteps before logging.
@@ -181,21 +365,19 @@ class BaseRLModel(ABC):
         pass
 
     @abstractmethod
-    def action_probability(self, observation, state=None, mask=None, actions=None):
+    def action_probability(self, observation, state=None, mask=None, actions=None, logp=False):
         """
-        If ``actions`` is ``None``, then get the model's action probability distribution from a given observation
+        If ``actions`` is ``None``, then get the model's action probability distribution from a given observation.
 
-        depending on the action space the output is:
+        Depending on the action space the output is:
             - Discrete: probability for each possible action
             - Box: mean and standard deviation of the action output
 
         However if ``actions`` is not ``None``, this function will return the probability that the given actions are
-        taken with the given parameters (observation, state, ...) on this model.
-
-        .. warning::
-            When working with continuous probability distribution (e.g. Gaussian distribution for continuous action)
-            the probability of taking a particular action is exactly zero.
-            See http://blog.christianperone.com/2019/01/ for a good explanation
+        taken with the given parameters (observation, state, ...) on this model. For discrete action spaces, it
+        returns the probability mass; for continuous action spaces, the probability density. This is since the
+        probability mass will always be zero in continuous spaces, see http://blog.christianperone.com/2019/01/
+        for a good explanation
 
         :param observation: (np.ndarray) the input observation
         :param state: (np.ndarray) The last states (can be None, used in recurrent policies)
@@ -203,36 +385,115 @@ class BaseRLModel(ABC):
         :param actions: (np.ndarray) (OPTIONAL) For calculating the likelihood that the given actions are chosen by
             the model for each of the given parameters. Must have the same number of actions and observations.
             (set to None to return the complete action probability distribution)
-        :return: (np.ndarray) the model's action probability
+        :param logp: (bool) (OPTIONAL) When specified with actions, returns probability in log-space.
+            This has no effect if actions is None.
+        :return: (np.ndarray) the model's (log) action probability
         """
         pass
 
+    def load_parameters(self, load_path_or_dict, exact_match=True):
+        """
+        Load model parameters from a file or a dictionary
+
+        Dictionary keys should be tensorflow variable names, which can be obtained
+        with ``get_parameters`` function. If ``exact_match`` is True, dictionary
+        should contain keys for all model's parameters, otherwise RunTimeError
+        is raised. If False, only variables included in the dictionary will be updated.
+
+        This does not load agent's hyper-parameters.
+
+        .. warning::
+            This function does not update trainer/optimizer variables (e.g. momentum).
+            As such training after using this function may lead to less-than-optimal results.
+
+        :param load_path_or_dict: (str or file-like or dict) Save parameter location
+            or dict of parameters as variable.name -> ndarrays to be loaded.
+        :param exact_match: (bool) If True, expects load dictionary to contain keys for
+            all variables in the model. If False, loads parameters only for variables
+            mentioned in the dictionary. Defaults to True.
+        """
+        # Make sure we have assign ops
+        if self._param_load_ops is None:
+            self._setup_load_operations()
+
+        if isinstance(load_path_or_dict, dict):
+            # Assume `load_path_or_dict` is dict of variable.name -> ndarrays we want to load
+            params = load_path_or_dict
+        elif isinstance(load_path_or_dict, list):
+            warnings.warn("Loading model parameters from a list. This has been replaced " +
+                          "with parameter dictionaries with variable names and parameters. " +
+                          "If you are loading from a file, consider re-saving the file.",
+                          DeprecationWarning)
+            # Assume `load_path_or_dict` is list of ndarrays.
+            # Create param dictionary assuming the parameters are in same order
+            # as `get_parameter_list` returns them.
+            params = dict()
+            for i, param_name in enumerate(self._param_load_ops.keys()):
+                params[param_name] = load_path_or_dict[i]
+        else:
+            # Assume a filepath or file-like.
+            # Use existing deserializer to load the parameters.
+            # We only need the parameters part of the file, so
+            # only load that part.
+            _, params = BaseRLModel._load_from_file(load_path_or_dict, load_data=False)
+            params = dict(params)
+
+        feed_dict = {}
+        param_update_ops = []
+        # Keep track of not-updated variables
+        not_updated_variables = set(self._param_load_ops.keys())
+        for param_name, param_value in params.items():
+            placeholder, assign_op = self._param_load_ops[param_name]
+            feed_dict[placeholder] = param_value
+            # Create list of tf.assign operations for sess.run
+            param_update_ops.append(assign_op)
+            # Keep track which variables are updated
+            not_updated_variables.remove(param_name)
+
+        # Check that we updated all parameters if exact_match=True
+        if exact_match and len(not_updated_variables) > 0:
+            raise RuntimeError("Load dictionary did not contain all variables. " +
+                               "Missing variables: {}".format(", ".join(not_updated_variables)))
+
+        self.sess.run(param_update_ops, feed_dict=feed_dict)
+
     @abstractmethod
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         """
         Save the current parameters to file
 
-        :param save_path: (str or file-like object) the save location
+        :param save_path: (str or file-like) The save location
+        :param cloudpickle: (bool) Use older cloudpickle format instead of zip-archives.
         """
-        # self._save_to_file(save_path, data={}, params=None)
         raise NotImplementedError()
 
     @classmethod
     @abstractmethod
-    def load(cls, load_path, env=None, **kwargs):
+    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
         """
         Load the model from file
 
         :param load_path: (str or file-like) the saved parameter location
         :param env: (Gym Envrionment) the new environment to run the loaded model on
             (can be None if you only need prediction from a trained model)
+        :param custom_objects: (dict) Dictionary of objects to replace
+            upon loading. If a variable is present in this dictionary as a
+            key, it will not be deserialized and the corresponding item
+            will be used instead. Similar to custom_objects in
+            `keras.models.load_model`. Useful when you have an object in
+            file that can not be deserialized.
         :param kwargs: extra arguments to change the model when loading
         """
-        # data, param = cls._load_from_file(load_path)
         raise NotImplementedError()
 
     @staticmethod
-    def _save_to_file(save_path, data=None, params=None):
+    def _save_to_file_cloudpickle(save_path, data=None, params=None):
+        """Legacy code for saving models with cloudpickle
+
+        :param save_path: (str or file-like) Where to store the model
+        :param data: (OrderedDict) Class parameters being stored
+        :param params: (OrderedDict) Model parameters being stored
+        """
         if isinstance(save_path, str):
             _, ext = os.path.splitext(save_path)
             if ext == "":
@@ -245,7 +506,67 @@ class BaseRLModel(ABC):
             cloudpickle.dump((data, params), save_path)
 
     @staticmethod
-    def _load_from_file(load_path):
+    def _save_to_file_zip(save_path, data=None, params=None):
+        """Save model to a .zip archive
+
+        :param save_path: (str or file-like) Where to store the model
+        :param data: (OrderedDict) Class parameters being stored
+        :param params: (OrderedDict) Model parameters being stored
+        """
+        # data/params can be None, so do not
+        # try to serialize them blindly
+        if data is not None:
+            serialized_data = data_to_json(data)
+        if params is not None:
+            serialized_params = params_to_bytes(params)
+            # We also have to store list of the parameters
+            # to store the ordering for OrderedDict.
+            # We can trust these to be strings as they
+            # are taken from the Tensorflow graph.
+            serialized_param_list = json.dumps(
+                list(params.keys()),
+                indent=4
+            )
+
+        # Check postfix if save_path is a string
+        if isinstance(save_path, str):
+            _, ext = os.path.splitext(save_path)
+            if ext == "":
+                save_path += ".zip"
+
+        # Create a zip-archive and write our objects
+        # there. This works when save_path
+        # is either str or a file-like
+        with zipfile.ZipFile(save_path, "w") as file_:
+            # Do not try to save "None" elements
+            if data is not None:
+                file_.writestr("data", serialized_data)
+            if params is not None:
+                file_.writestr("parameters", serialized_params)
+                file_.writestr("parameter_list", serialized_param_list)
+
+    @staticmethod
+    def _save_to_file(save_path, data=None, params=None, cloudpickle=False):
+        """Save model to a zip archive or cloudpickle file.
+
+        :param save_path: (str or file-like) Where to store the model
+        :param data: (OrderedDict) Class parameters being stored
+        :param params: (OrderedDict) Model parameters being stored
+        :param cloudpickle: (bool) Use old cloudpickle format
+            (stable-baselines<=2.7.0) instead of a zip archive.
+        """
+        if cloudpickle:
+            BaseRLModel._save_to_file_cloudpickle(save_path, data, params)
+        else:
+            BaseRLModel._save_to_file_zip(save_path, data, params)
+
+    @staticmethod
+    def _load_from_file_cloudpickle(load_path):
+        """Legacy code for loading older models stored with cloudpickle
+
+        :param load_path: (str or file-like) where from to load the file
+        :return: (dict, OrderedDict) Class parameters and model parameters
+        """
         if isinstance(load_path, str):
             if not os.path.exists(load_path):
                 if os.path.exists(load_path + ".pkl"):
@@ -253,11 +574,74 @@ class BaseRLModel(ABC):
                 else:
                     raise ValueError("Error: the file {} could not be found".format(load_path))
 
-            with open(load_path, "rb") as file:
-                data, params = cloudpickle.load(file)
+            with open(load_path, "rb") as file_:
+                data, params = cloudpickle.load(file_)
         else:
             # Here load_path is a file-like object, not a path
             data, params = cloudpickle.load(load_path)
+
+        return data, params
+
+    @staticmethod
+    def _load_from_file(load_path, load_data=True, custom_objects=None):
+        """Load model data from a .zip archive
+
+        :param load_path: (str or file-like) Where to load model from
+        :param load_data: (bool) Whether we should load and return data
+            (class parameters). Mainly used by `load_parameters` to
+            only load model parameters (weights).
+        :param custom_objects: (dict) Dictionary of objects to replace
+            upon loading. If a variable is present in this dictionary as a
+            key, it will not be deserialized and the corresponding item
+            will be used instead. Similar to custom_objects in
+            `keras.models.load_model`. Useful when you have an object in
+            file that can not be deserialized.
+        :return: (dict, OrderedDict) Class parameters and model parameters
+        """
+        # Check if file exists if load_path is
+        # a string
+        if isinstance(load_path, str):
+            if not os.path.exists(load_path):
+                if os.path.exists(load_path + ".zip"):
+                    load_path += ".zip"
+                else:
+                    raise ValueError("Error: the file {} could not be found".format(load_path))
+
+        # Open the zip archive and load data.
+        try:
+            with zipfile.ZipFile(load_path, "r") as file_:
+                namelist = file_.namelist()
+                # If data or parameters is not in the
+                # zip archive, assume they were stored
+                # as None (_save_to_file allows this).
+                data = None
+                params = None
+                if "data" in namelist and load_data:
+                    # Load class parameters and convert to string
+                    # (Required for json library in Python 3.5)
+                    json_data = file_.read("data").decode()
+                    data = json_to_data(json_data, custom_objects=custom_objects)
+
+                if "parameters" in namelist:
+                    # Load parameter list and and parameters
+                    parameter_list_json = file_.read("parameter_list").decode()
+                    parameter_list = json.loads(parameter_list_json)
+                    serialized_params = file_.read("parameters")
+                    params = bytes_to_params(
+                        serialized_params, parameter_list
+                    )
+        except zipfile.BadZipFile:
+            # load_path wasn't a zip file. Possibly a cloudpickle
+            # file. Show a warning and fall back to loading cloudpickle.
+            warnings.warn("It appears you are loading from a file with old format. " +
+                          "Older cloudpickle format has been replaced with zip-archived " +
+                          "models. Consider saving the model with new format.",
+                          DeprecationWarning)
+            # Attempt loading with the cloudpickle format.
+            # If load_path is file-like, seek back to beginning of file
+            if not isinstance(load_path, str):
+                load_path.seek(0)
+            data, params = BaseRLModel._load_from_file_cloudpickle(load_path)
 
         return data, params
 
@@ -333,12 +717,19 @@ class ActorCriticRLModel(BaseRLModel):
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param policy_base: (BasePolicy) the base policy used by this method (default=ActorCriticPolicy)
     :param requires_vec_env: (bool) Does this model require a vectorized environment
+    :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
 
     def __init__(self, policy, env, _init_setup_model, verbose=0, policy_base=ActorCriticPolicy,
-                 requires_vec_env=False, policy_kwargs=None):
+                 requires_vec_env=False, policy_kwargs=None, seed=None, n_cpu_tf_sess=None):
         super(ActorCriticRLModel, self).__init__(policy, env, verbose=verbose, requires_vec_env=requires_vec_env,
-                                                 policy_base=policy_base, policy_kwargs=policy_kwargs)
+                                                 policy_base=policy_base, policy_kwargs=policy_kwargs,
+                                                 seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
 
         self.sess = None
         self.initial_state = None
@@ -351,7 +742,7 @@ class ActorCriticRLModel(BaseRLModel):
         pass
 
     @abstractmethod
-    def learn(self, total_timesteps, callback=None, seed=None,
+    def learn(self, total_timesteps, callback=None,
               log_interval=100, tb_log_name="run", reset_num_timesteps=True):
         pass
 
@@ -378,7 +769,7 @@ class ActorCriticRLModel(BaseRLModel):
 
         return clipped_actions, states
 
-    def action_probability(self, observation, state=None, mask=None, actions=None):
+    def action_probability(self, observation, state=None, mask=None, actions=None, logp=False):
         if state is None:
             state = self.initial_state
         if mask is None:
@@ -395,12 +786,14 @@ class ActorCriticRLModel(BaseRLModel):
             return None
 
         if actions is not None:  # comparing the action distribution, to given actions
+            prob = None
+            logprob = None
             actions = np.array([actions])
             if isinstance(self.action_space, gym.spaces.Discrete):
                 actions = actions.reshape((-1,))
                 assert observation.shape[0] == actions.shape[0], \
                     "Error: batch sizes differ for actions and observations."
-                actions_proba = actions_proba[np.arange(actions.shape[0]), actions]
+                prob = actions_proba[np.arange(actions.shape[0]), actions]
 
             elif isinstance(self.action_space, gym.spaces.MultiDiscrete):
                 actions = actions.reshape((-1, len(self.action_space.nvec)))
@@ -408,7 +801,7 @@ class ActorCriticRLModel(BaseRLModel):
                     "Error: batch sizes differ for actions and observations."
                 # Discrete action probability, over multiple categories
                 actions = np.swapaxes(actions, 0, 1)  # swap axis for easier categorical split
-                actions_proba = np.prod([proba[np.arange(act.shape[0]), act]
+                prob = np.prod([proba[np.arange(act.shape[0]), act]
                                          for proba, act in zip(actions_proba, actions)], axis=0)
 
             elif isinstance(self.action_space, gym.spaces.MultiBinary):
@@ -416,33 +809,70 @@ class ActorCriticRLModel(BaseRLModel):
                 assert observation.shape[0] == actions.shape[0], \
                     "Error: batch sizes differ for actions and observations."
                 # Bernoulli action probability, for every action
-                actions_proba = np.prod(actions_proba * actions + (1 - actions_proba) * (1 - actions), axis=1)
+                prob = np.prod(actions_proba * actions + (1 - actions_proba) * (1 - actions), axis=1)
 
             elif isinstance(self.action_space, gym.spaces.Box):
-                warnings.warn("The probabilty of taken a given action is exactly zero for a continuous distribution."
-                              "See http://blog.christianperone.com/2019/01/ for a good explanation")
-                actions_proba = np.zeros((observation.shape[0], 1), dtype=np.float32)
+                actions = actions.reshape((-1, ) + self.action_space.shape)
+                mean, logstd = actions_proba
+                std = np.exp(logstd)
+
+                n_elts = np.prod(mean.shape[1:])  # first dimension is batch size
+                log_normalizer = n_elts/2 * np.log(2 * np.pi) + 1/2 * np.sum(logstd, axis=1)
+
+                # Diagonal Gaussian action probability, for every action
+                logprob = -np.sum(np.square(actions - mean) / (2 * std), axis=1) - log_normalizer
+
             else:
                 warnings.warn("Warning: action_probability not implemented for {} actions space. Returning None."
                               .format(type(self.action_space).__name__))
                 return None
+
+            # Return in space (log or normal) requested by user, converting if necessary
+            if logp:
+                if logprob is None:
+                    logprob = np.log(prob)
+                ret = logprob
+            else:
+                if prob is None:
+                    prob = np.exp(logprob)
+                ret = prob
+
             # normalize action proba shape for the different gym spaces
-            actions_proba = actions_proba.reshape((-1, 1))
+            ret = ret.reshape((-1, 1))
+        else:
+            ret = actions_proba
 
         if not vectorized_env:
             if state is not None:
                 raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
-            actions_proba = actions_proba[0]
+            ret = ret[0]
 
-        return actions_proba
+        return ret
+
+    def get_parameter_list(self):
+        return self.params
 
     @abstractmethod
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         pass
 
     @classmethod
-    def load(cls, load_path, env=None, **kwargs):
-        data, params = cls._load_from_file(load_path)
+    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
+        """
+        Load the model from file
+
+        :param load_path: (str or file-like) the saved parameter location
+        :param env: (Gym Envrionment) the new environment to run the loaded model on
+            (can be None if you only need prediction from a trained model)
+        :param custom_objects: (dict) Dictionary of objects to replace
+            upon loading. If a variable is present in this dictionary as a
+            key, it will not be deserialized and the corresponding item
+            will be used instead. Similar to custom_objects in
+            `keras.models.load_model`. Useful when you have an object in
+            file that can not be deserialized.
+        :param kwargs: extra arguments to change the model when loading
+        """
+        data, params = cls._load_from_file(load_path, custom_objects=custom_objects)
 
         if 'policy_kwargs' in kwargs and kwargs['policy_kwargs'] != data['policy_kwargs']:
             raise ValueError("The specified policy kwargs do not equal the stored policy kwargs. "
@@ -455,10 +885,7 @@ class ActorCriticRLModel(BaseRLModel):
         model.set_env(env)
         model.setup_model()
 
-        restores = []
-        for param, loaded_p in zip(model.params, params):
-            restores.append(param.assign(loaded_p))
-        model.sess.run(restores)
+        model.load_parameters(params)
 
         return model
 
@@ -474,11 +901,20 @@ class OffPolicyRLModel(BaseRLModel):
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param requires_vec_env: (bool) Does this model require a vectorized environment
     :param policy_base: (BasePolicy) the base policy used by this method
+    :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
 
-    def __init__(self, policy, env, replay_buffer, verbose=0, *, requires_vec_env, policy_base, policy_kwargs=None):
+    def __init__(self, policy, env, replay_buffer=None, _init_setup_model=False, verbose=0, *,
+                 requires_vec_env=False, policy_base=None,
+                 policy_kwargs=None, seed=None, n_cpu_tf_sess=None):
         super(OffPolicyRLModel, self).__init__(policy, env, verbose=verbose, requires_vec_env=requires_vec_env,
-                                               policy_base=policy_base, policy_kwargs=policy_kwargs)
+                                               policy_base=policy_base, policy_kwargs=policy_kwargs,
+                                               seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
 
         self.replay_buffer = replay_buffer
 
@@ -487,8 +923,8 @@ class OffPolicyRLModel(BaseRLModel):
         pass
 
     @abstractmethod
-    def learn(self, total_timesteps, callback=None, seed=None,
-              log_interval=100, tb_log_name="run", reset_num_timesteps=True):
+    def learn(self, total_timesteps, callback=None,
+              log_interval=100, tb_log_name="run", reset_num_timesteps=True, replay_wrapper=None):
         pass
 
     @abstractmethod
@@ -496,18 +932,45 @@ class OffPolicyRLModel(BaseRLModel):
         pass
 
     @abstractmethod
-    def action_probability(self, observation, state=None, mask=None, actions=None):
+    def action_probability(self, observation, state=None, mask=None, actions=None, logp=False):
         pass
 
     @abstractmethod
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         pass
 
     @classmethod
-    @abstractmethod
-    def load(cls, load_path, env=None, **kwargs):
-        pass
+    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
+        """
+        Load the model from file
 
+        :param load_path: (str or file-like) the saved parameter location
+        :param env: (Gym Envrionment) the new environment to run the loaded model on
+            (can be None if you only need prediction from a trained model)
+        :param custom_objects: (dict) Dictionary of objects to replace
+            upon loading. If a variable is present in this dictionary as a
+            key, it will not be deserialized and the corresponding item
+            will be used instead. Similar to custom_objects in
+            `keras.models.load_model`. Useful when you have an object in
+            file that can not be deserialized.
+        :param kwargs: extra arguments to change the model when loading
+        """
+        data, params = cls._load_from_file(load_path, custom_objects=custom_objects)
+
+        if 'policy_kwargs' in kwargs and kwargs['policy_kwargs'] != data['policy_kwargs']:
+            raise ValueError("The specified policy kwargs do not equal the stored policy kwargs. "
+                             "Stored kwargs: {}, specified kwargs: {}".format(data['policy_kwargs'],
+                                                                              kwargs['policy_kwargs']))
+
+        model = cls(policy=data["policy"], env=None, _init_setup_model=False)
+        model.__dict__.update(data)
+        model.__dict__.update(kwargs)
+        model.set_env(env)
+        model.setup_model()
+
+        model.load_parameters(params)
+
+        return model
 
 class _UnvecWrapper(VecEnvWrapper):
     def __init__(self, venv):
@@ -519,15 +982,46 @@ class _UnvecWrapper(VecEnvWrapper):
         super().__init__(venv)
         assert venv.num_envs == 1, "Error: cannot unwrap a environment wrapper that has more than one environment."
 
+    def seed(self, seed=None):
+        return self.venv.env_method('seed', seed)
+
+    def __getattr__(self, attr):
+        if attr in self.__dict__:
+            return getattr(self, attr)
+        return getattr(self.venv, attr)
+
+    def __set_attr__(self, attr, value):
+        if attr in self.__dict__:
+            setattr(self, attr, value)
+        else:
+            setattr(self.venv, attr, value)
+
+    def compute_reward(self, achieved_goal, desired_goal, _info):
+        return float(self.venv.env_method('compute_reward', achieved_goal, desired_goal, _info)[0])
+
+    @staticmethod
+    def unvec_obs(obs):
+        """
+        :param obs: (Union[np.ndarray, dict])
+        :return: (Union[np.ndarray, dict])
+        """
+        if not isinstance(obs, dict):
+            return obs[0]
+        obs_ = OrderedDict()
+        for key in obs.keys():
+            obs_[key] = obs[key][0]
+        del obs
+        return obs_
+
     def reset(self):
-        return self.venv.reset()[0]
+        return self.unvec_obs(self.venv.reset())
 
     def step_async(self, actions):
         self.venv.step_async([actions])
 
     def step_wait(self):
-        actions, values, states, information = self.venv.step_wait()
-        return actions[0], float(values[0]), states[0], information[0]
+        obs, rewards, dones, information = self.venv.step_wait()
+        return self.unvec_obs(obs), float(rewards[0]), dones[0], information[0]
 
     def render(self, mode='human'):
         return self.venv.render(mode=mode)
@@ -596,8 +1090,8 @@ class TensorboardWriter:
         :return: (int) latest run number
         """
         max_run_id = 0
-        for path in glob.glob(self.tensorboard_log_path + "/{}_[0-9]*".format(self.tb_log_name)):
-            file_name = path.split("/")[-1]
+        for path in glob.glob("{}/{}_[0-9]*".format(self.tensorboard_log_path, self.tb_log_name)):
+            file_name = path.split(os.sep)[-1]
             ext = file_name.split("_")[-1]
             if self.tb_log_name == "_".join(file_name.split("_")[:-1]) and ext.isdigit() and int(ext) > max_run_id:
                 max_run_id = int(ext)

@@ -1,22 +1,20 @@
 __all__ = ['Monitor', 'get_monitor_files', 'load_results']
 
-import os
-import time
 import csv
 import json
-import uuid
+import os
+import time
 from glob import glob
 
-import gym
-from gym.core import Wrapper
 import pandas
+from gym.core import Wrapper
 
 
 class Monitor(Wrapper):
     EXT = "monitor.csv"
     file_handler = None
 
-    def __init__(self, env, filename, allow_early_resets=False, reset_keywords=(), info_keywords=()):
+    def __init__(self, env, filename, allow_early_resets=True, reset_keywords=(), info_keywords=()):
         """
         A monitor wrapper for Gym environments, it is used to know the episode reward, length, time and other data.
 
@@ -162,13 +160,13 @@ def get_monitor_files(path):
 
 def load_results(path):
     """
-    Load results from a given file
+    Load all Monitor logs from a given directory path matching ``*monitor.csv`` and ``*monitor.json``
 
-    :param path: (str) the path to the log file
+    :param path: (str) the directory path containing the log file(s)
     :return: (Pandas DataFrame) the logged data
     """
     # get both csv and (old) json files
-    monitor_files = (glob(os.path.join(path, "*monitor.json")) + glob(os.path.join(path, "*monitor.csv")))
+    monitor_files = (glob(os.path.join(path, "*monitor.json")) + get_monitor_files(path))
     if not monitor_files:
         raise LoadMonitorResultsError("no monitor files of the form *%s found in %s" % (Monitor.EXT, path))
     data_frames = []
@@ -200,31 +198,3 @@ def load_results(path):
     data_frame['t'] -= min(header['t_start'] for header in headers)
     # data_frame.headers = headers  # HACK to preserve backwards compatibility
     return data_frame
-
-
-def test_monitor():
-    """
-    test the monitor wrapper
-    """
-    env = gym.make("CartPole-v1")
-    env.seed(0)
-    mon_file = "/tmp/stable_baselines-test-%s.monitor.csv" % uuid.uuid4()
-    menv = Monitor(env, mon_file)
-    menv.reset()
-    for _ in range(1000):
-        _, _, done, _ = menv.step(0)
-        if done:
-            menv.reset()
-
-    file_handler = open(mon_file, 'rt')
-
-    firstline = file_handler.readline()
-    assert firstline.startswith('#')
-    metadata = json.loads(firstline[1:])
-    assert metadata['env_id'] == "CartPole-v1"
-    assert set(metadata.keys()) == {'env_id', 'gym_version', 't_start'}, "Incorrect keys in monitor metadata"
-
-    last_logline = pandas.read_csv(file_handler, index_col=None)
-    assert set(last_logline.keys()) == {'l', 't', 'r'}, "Incorrect keys in monitor logline"
-    file_handler.close()
-    os.remove(mon_file)

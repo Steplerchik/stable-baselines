@@ -1,17 +1,20 @@
 from collections import OrderedDict
 import numpy as np
 
-from stable_baselines.common.vec_env import VecEnv
+from stable_baselines.common.vec_env.base_vec_env import VecEnv
 from stable_baselines.common.vec_env.util import copy_obs_dict, dict_to_obs, obs_space_info
 
 
 class DummyVecEnv(VecEnv):
     """
-    Creates a simple vectorized wrapper for multiple environments
+    Creates a simple vectorized wrapper for multiple environments, calling each environment in sequence on the current
+    Python process. This is useful for computationally simple environment such as ``cartpole-v1``, as the overhead of
+    multiprocess or multithread outweighs the environment computation time. This can also be used for RL methods that
+    require a vectorized environment, but that you want a single environments to train with.
 
     :param env_fns: ([Gym Environment]) the list of environments to vectorize
     """
-    
+
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
@@ -26,6 +29,7 @@ class DummyVecEnv(VecEnv):
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos = [{} for _ in range(self.num_envs)]
         self.actions = None
+        self.metadata = env.metadata
 
     def step_async(self, actions):
         self.actions = actions
@@ -35,6 +39,8 @@ class DummyVecEnv(VecEnv):
             obs, self.buf_rews[env_idx], self.buf_dones[env_idx], self.buf_infos[env_idx] =\
                 self.envs[env_idx].step(self.actions[env_idx])
             if self.buf_dones[env_idx]:
+                # save final observation where user can get it, then reset
+                self.buf_infos[env_idx]['terminal_observation'] = obs
                 obs = self.envs[env_idx].reset()
             self._save_obs(env_idx, obs)
         return (self._obs_from_buf(), np.copy(self.buf_rews), np.copy(self.buf_dones),
@@ -47,7 +53,8 @@ class DummyVecEnv(VecEnv):
         return self._obs_from_buf()
 
     def close(self):
-        return
+        for env in self.envs:
+            env.close()
 
     def get_images(self):
         return [env.render(mode='rgb_array') for env in self.envs]
@@ -68,37 +75,22 @@ class DummyVecEnv(VecEnv):
     def _obs_from_buf(self):
         return dict_to_obs(self.observation_space, copy_obs_dict(self.buf_obs))
 
-    def env_method(self, method_name, *method_args, **method_kwargs):
-        """
-        Provides an interface to call arbitrary class methods of vectorized environments
-
-        :param method_name: (str) The name of the env class method to invoke
-        :param method_args: (tuple) Any positional arguments to provide in the call
-        :param method_kwargs: (dict) Any keyword arguments to provide in the call
-        :return: (list) List of items retured by the environment's method call
-        """
-        return [getattr(env_i, method_name)(*method_args, **method_kwargs) for env_i in self.envs]
-
-    def get_attr(self, attr_name):
-        """
-        Provides a mechanism for getting class attribues from vectorized environments
-
-        :param attr_name: (str) The name of the attribute whose value to return
-        :return: (list) List of values of 'attr_name' in all environments
-        """
-        return [getattr(env_i, attr_name) for env_i in self.envs]
+    def get_attr(self, attr_name, indices=None):
+        """Return attribute from vectorized environment (see base class)."""
+        target_envs = self._get_target_envs(indices)
+        return [getattr(env_i, attr_name) for env_i in target_envs]
 
     def set_attr(self, attr_name, value, indices=None):
-        """
-        Provides a mechanism for setting arbitrary class attributes inside vectorized environments
+        """Set attribute inside vectorized environments (see base class)."""
+        target_envs = self._get_target_envs(indices)
+        for env_i in target_envs:
+            setattr(env_i, attr_name, value)
 
-        :param attr_name: (str) Name of attribute to assign new value
-        :param value: (obj) Value to assign to 'attr_name'
-        :param indices: (list,int) Indices of envs to assign value
-        :return: (list) in case env access methods might return something, they will be returned in a list
-        """
-        if indices is None:
-            indices = range(len(self.envs))
-        elif isinstance(indices, int):
-            indices = [indices]
-        return [setattr(env_i, attr_name, value) for env_i in [self.envs[i] for i in indices]]
+    def env_method(self, method_name, *method_args, indices=None, **method_kwargs):
+        """Call instance methods of vectorized environments."""
+        target_envs = self._get_target_envs(indices)
+        return [getattr(env_i, method_name)(*method_args, **method_kwargs) for env_i in target_envs]
+
+    def _get_target_envs(self, indices):
+        indices = self._get_indices(indices)
+        return [self.envs[i] for i in indices]

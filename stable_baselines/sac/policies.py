@@ -99,7 +99,6 @@ class SACPolicy(BasePolicy):
     def __init__(self, sess, ob_space, ac_space, n_env=1, n_steps=1, n_batch=None, reuse=False, scale=False):
         super(SACPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, scale=scale)
         assert isinstance(ac_space, Box), "Error: the action space must be of type gym.spaces.Box"
-        assert (np.abs(ac_space.low) == ac_space.high).all(), "Error: the action space low and high must be symmetric"
 
         self.qf1 = None
         self.qf2 = None
@@ -174,7 +173,6 @@ class FeedForwardPolicy(SACPolicy):
     :param cnn_extractor: (function (TensorFlow Tensor, ``**kwargs``): (TensorFlow Tensor)) the CNN feature extraction
     :param feature_extraction: (str) The feature extraction type ("cnn" or "mlp")
     :param layer_norm: (bool) enable layer normalisation
-    :param reg_weight: (float) Regularization loss weight for the policy parameters
     :param reg_weight: (float) Regularization loss weight for the policy parameters
     :param act_fun: (tf.func) the activation function to use in the neural network.
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction

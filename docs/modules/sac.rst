@@ -5,7 +5,12 @@
 
 SAC
 ===
+
 `Soft Actor Critic (SAC) <https://spinningup.openai.com/en/latest/algorithms/sac.html>`_ Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor.
+
+SAC is the successor of `Soft Q-Learning SQL <https://arxiv.org/abs/1702.08165>`_ and incorporates the double Q-learning trick from TD3.
+A key feature of SAC, and a major difference with common RL algorithms, is that it is trained to maximize a trade-off between expected return and entropy, a measure of randomness in the policy.
+
 
 .. warning::
 
@@ -70,11 +75,9 @@ Example
   import numpy as np
 
   from stable_baselines.sac.policies import MlpPolicy
-  from stable_baselines.common.vec_env import DummyVecEnv
   from stable_baselines import SAC
 
   env = gym.make('Pendulum-v0')
-  env = DummyVecEnv([lambda: env])
 
   model = SAC(MlpPolicy, env, verbose=1)
   model.learn(total_timesteps=50000, log_interval=10)
@@ -139,7 +142,7 @@ You can easily define a custom architecture for the policy network:
   # Custom MLP policy of three layers of size 128 each
   class CustomSACPolicy(FeedForwardPolicy):
       def __init__(self, *args, **kwargs):
-          super(CustomPolicy, self).__init__(*args, **kwargs,
+          super(CustomSACPolicy, self).__init__(*args, **kwargs,
                                              layers=[128, 128, 128],
                                              layer_norm=False,
                                              feature_extraction="mlp")

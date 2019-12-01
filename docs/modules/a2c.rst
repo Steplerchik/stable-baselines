@@ -14,11 +14,11 @@ Notes
 -----
 
 -  Original paper:  https://arxiv.org/abs/1602.01783
--  OpenAI blog post: https://blog.openai.com/openai-baselines-ppo/
--  ``python -m stable_baselines.ppo2.run_atari`` runs the algorithm for 40M
+-  OpenAI blog post: https://openai.com/blog/baselines-acktr-a2c/
+-  ``python -m stable_baselines.a2c.run_atari`` runs the algorithm for 40M
    frames = 10M timesteps on an Atari game. See help (``-h``) for more
    options.
--  ``python -m stable_baselines.ppo2.run_mujoco`` runs the algorithm for 1M
+-  ``python -m stable_baselines.a2c.run_mujoco`` runs the algorithm for 1M
    frames on a Mujoco environment.
 
 Can I use?
@@ -49,12 +49,11 @@ Train a A2C agent on `CartPole-v1` using 4 processes.
   import gym
 
   from stable_baselines.common.policies import MlpPolicy
-  from stable_baselines.common.vec_env import SubprocVecEnv
+  from stable_baselines.common import make_vec_env
   from stable_baselines import A2C
 
-  # multiprocess environment
-  n_cpu = 4
-  env = SubprocVecEnv([lambda: gym.make('CartPole-v1') for i in range(n_cpu)])
+  # Parallel environments
+  env = make_vec_env('CartPole-v1', n_envs=4)
 
   model = A2C(MlpPolicy, env, verbose=1)
   model.learn(total_timesteps=25000)

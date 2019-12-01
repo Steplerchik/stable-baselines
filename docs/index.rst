@@ -13,7 +13,7 @@ Github repository: https://github.com/hill-a/stable-baselines
 
 RL Baselines Zoo (collection of pre-trained agents): https://github.com/araffin/rl-baselines-zoo
 
-RL Baselines zoo also offers a simple interface to train and evaluate agents.
+RL Baselines zoo also offers a simple interface to train, evaluate agents and do hyperparameter tuning.
 
 You can read a detailed presentation of Stable Baselines in the
 Medium article: `link <https://medium.com/@araffin/stable-baselines-a-fork-of-openai-baselines-reinforcement-learning-made-easy-df87c4b2fc82>`_
@@ -30,6 +30,7 @@ This toolset is a fork of OpenAI Baselines, with a major structural refactoring,
 - PEP8 compliant (unified code style)
 - Documented functions and classes
 - More tests & more code coverage
+- Additional algorithms: SAC and TD3 (+ HER support for DQN, DDPG, SAC and TD3)
 
 
 .. toctree::
@@ -46,6 +47,10 @@ This toolset is a fork of OpenAI Baselines, with a major structural refactoring,
    guide/custom_policy
    guide/tensorboard
    guide/rl_zoo
+   guide/pretrain
+   guide/checking_nan
+   guide/save_format
+   guide/export
 
 
 .. toctree::
@@ -64,6 +69,7 @@ This toolset is a fork of OpenAI Baselines, with a major structural refactoring,
   modules/ppo1
   modules/ppo2
   modules/sac
+  modules/td3
   modules/trpo
 
 .. toctree::
@@ -74,6 +80,7 @@ This toolset is a fork of OpenAI Baselines, with a major structural refactoring,
   common/tf_utils
   common/cmd_utils
   common/schedules
+  common/evaluation
 
 .. toctree::
   :maxdepth: 1
@@ -91,7 +98,7 @@ To cite this project in publications:
 .. code-block:: bibtex
 
     @misc{stable-baselines,
-      author = {Hill, Ashley and Raffin, Antonin and Ernestus, Maximilian and Traore, Rene and Dhariwal, Prafulla and Hesse, Christopher and Klimov, Oleg and Nichol, Alex and Plappert, Matthias and Radford, Alec and Schulman, John and Sidor, Szymon and Wu, Yuhuai},
+      author = {Hill, Ashley and Raffin, Antonin and Ernestus, Maximilian and Gleave, Adam and Kanervisto, Anssi and Traore, Rene and Dhariwal, Prafulla and Hesse, Christopher and Klimov, Oleg and Nichol, Alex and Plappert, Matthias and Radford, Alec and Schulman, John and Sidor, Szymon and Wu, Yuhuai},
       title = {Stable Baselines},
       year = {2018},
       publisher = {GitHub},
