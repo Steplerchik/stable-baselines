@@ -322,9 +322,6 @@ class PPO2(ActorCriticRLModel):
             ep_info_buf = deque(maxlen=100)
             t_first_start = time.time()
 
-            checkpoint_interval = 500 #000
-
-
             nupdates = total_timesteps // self.n_batch
             for update in range(1, nupdates + 1):
                 assert self.n_batch % self.nminibatches == 0
@@ -403,11 +400,6 @@ class PPO2(ActorCriticRLModel):
                     if callback(locals(), globals()) is False:
                         break
 
-                # Added by Ronja Gueldenring to save agents inbetween training.
-                if ((update + 1) * self.n_batch > checkpoint_interval and save_path != ""):
-                    self.save("%s_%d" % (save_path, ((update+1)*self.n_batch)))
-                    checkpoint_interval += 500000
-
             return self
 
     def save(self, save_path, cloudpickle=False):
@@ -431,7 +423,9 @@ class PPO2(ActorCriticRLModel):
             "n_cpu_tf_sess": self.n_cpu_tf_sess,
             "seed": self.seed,
             "_vectorize_action": self._vectorize_action,
-            "policy_kwargs": self.policy_kwargs
+            "policy_kwargs": self.policy_kwargs,
+            "num_timesteps": self.num_timesteps
+
         }
 
         params_to_save = self.get_parameters()
