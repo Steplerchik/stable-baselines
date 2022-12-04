@@ -27,6 +27,7 @@ def _worker(remote, parent_remote, env_fn_wrapper):
             elif cmd == 'render':
                 remote.send(env.render(*data[0], **data[1]))
             elif cmd == 'close':
+                env.close()
                 remote.close()
                 break
             elif cmd == 'get_spaces':
